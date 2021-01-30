@@ -1,0 +1,175 @@
+version: "3"
+services:
+    docker: 
+        # Docker-in-Docker, in order to execute Docker builds in Jenkins
+        image: "docker:dind"
+        privileged: true
+        container_name: mydocker
+        restart: unless-stopped
+        networks:
+            - jenkins-net
+        environment: 
+            - DOCKER_TLS_CERTDIR=/certs
+        volumes:
+            - type: volume
+              source: jenkins-docker-certs
+              target: /certs/client
+            - type: volume
+              source: jenkins-data
+              target: /var/jenkins_home
+        ports: 
+            - 2376:2376
+        healthcheck:
+            test: nc -z -v docker 2376
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        deploy:
+            resources:
+                limits:
+                  cpus: '0.50'
+                  memory: 1g
+
+    jenkins:
+        build:
+            context: .
+            dockerfile: Dockerfile
+            labels:
+                maintainer: Stan Smoltis <stan.smoltis@servicenow.com>
+        container_name: myjenkins-blueocean
+        restart: unless-stopped
+        networks:
+            - jenkins-net
+        # links:
+        #     - docker:jenkinscli
+        #     - gitlab:gitlab
+        environment: 
+            - DOCKER_HOST=tcp://docker:2376
+            - DOCKER_CERT_PATH=/certs/client
+            - DOCKER_TLS_VERIFY=1
+        volumes:
+            - type: volume
+              source: jenkins-docker-certs
+              target: /certs/client
+              read_only: true
+            - type: volume
+              source: jenkins-data
+              target: /var/jenkins_home
+        ports: 
+            - 8880:8080
+            - 50000:50000
+        healthcheck:
+            test: curl -L http://jenkins:8080
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        depends_on: 
+            docker:
+                condition: service_healthy
+            gitlab:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    cpus: 1
+                    memory: 1g
+
+    gitlab:
+        image: gitlab/gitlab-ee:latest
+        container_name: mygitlab-docker
+        # privileged: true
+        networks:
+            - jenkins-net
+        restart: unless-stopped
+        hostname: gitlab
+        environment:
+            DOCKER_HOST: "tcp://docker:2376"
+            DOCKER_CERT_PATH: "/certs/client"
+            DOCKER_TLS_VERIFY: "1"
+            GITLAB_OMNIBUS_CONFIG: |
+                external_url 'http://localhost:8929'
+                ci_external_url 'http://gitlab:8929/'
+                gitlab_rails['gitlab_shell_ssh_port'] = 2229
+                # Add any other gitlab.rb configuration here, each on its own line
+        ports:
+            - 8929:8929
+            - 2222:2229
+        healthcheck:
+            test: curl -L http://gitlab:8929
+            interval: 20s
+            timeout: 10s
+            retries: 10
+
+        volumes:
+            - type: bind
+              source: $GITLAB_HOME/config
+              target: /etc/gitlab
+            - type: bind
+              source: $GITLAB_HOME/logs
+              target: /var/log/gitlab
+            - type: bind
+              source: $GITLAB_HOME/data
+              target: /var/opt/gitlab
+            - type: volume
+              source: jenkins-docker-certs
+              target: /certs/client
+              read_only: true
+            - type: bind
+              source: $GITLAB_HOME/gitlab-runner
+              target: /etc/gitlab-runner              
+        deploy:
+            resources:
+                limits:
+                    cpus: 1
+                    memory: 6g
+
+    gitlab-runner:
+        image: gitlab/gitlab-runner:alpine
+        container_name: mygitlab-runner
+        privileged: true
+        networks:
+            - jenkins-net
+        restart: always
+        hostname: gitlab-runner
+        environment: # Options can be found by running "gitlab-runner register". More info found at https://docs.gitlab.com/runner/configuration/advanced-configuration.html
+            REGISTER_NON_INTERACTIVE: "true"                # Run registration unattended
+            CI_SERVER_URL: "http://gitlab:8929/"            # Runner URL
+            # REGISTRATION_TOKEN: YqCWs3WpqcyoZhLxmvgx           # Runner's registration token
+            RUNNER_EXECUTOR: shell                       # Select executor, eg. shell, docker, etc.      
+            # RUNNER_NAME: ${GITLAB_RUNNER_DESCRIPTION}     # Runner name
+            # RUNNER_TAG_LIST: ${GITLAB_TAGS}               # Tag list
+            # REGISTER_LOCKED: false                        # Lock Runner for current project
+            # DOCKER_IMAGE: docker:latest                   # Docker image to be used
+            # DOCKER_PRIVILEGED: true                       # Give extended privileges to container
+            # DOCKER_EXTRA_HOSTS: gitlab:${GITLAB_IP}       # Add a custom host-to-IP mapping
+            # DOCKER_HOST: "tcp://docker:2376"
+            # DOCKER_CERT_PATH: "/certs/client"
+            # DOCKER_TLS_VERIFY: "1"
+            TZ: "UTC"
+        depends_on: 
+            gitlab:
+                condition: service_healthy
+        volumes:
+            # - type: volume
+            #   source: jenkins-docker-certs
+            #   target: /certs/client
+            #   read_only: true
+            - type: bind
+              source: $GITLAB_HOME/gitlab-runner
+              target: /etc/gitlab-runner              
+        deploy:
+            resources:
+                limits:
+                    cpus: 0.5
+                    memory: 1g
+
+volumes:
+    jenkins-docker-certs:
+        # driver_opts:
+        #     size: 100m
+    jenkins-data:
+        # driver_opts:
+        #     size: 1g
+
+networks:
+    jenkins-net:
